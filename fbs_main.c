@@ -77,8 +77,11 @@
 #define GP_LED7_BANK        2
 #define GP_LED7_BIT         8
 
-
-
+int led_banks[] = {GP_LED0_BANK, GP_LED1_BANK, GP_LED2_BANK, GP_LED3_BANK,
+                   GP_LED4_BANK, GP_LED5_BANK, GP_LED6_BANK, GP_LED7_BANK};
+                   
+int led_bits[] =  {GP_LED0_BIT, GP_LED1_BIT, GP_LED2_BIT, GP_LED3_BIT,
+                   GP_LED4_BIT, GP_LED5_BIT, GP_LED6_BIT, GP_LED7_BIT};                    
 
 
 #define MAX_GPIO_BANKS              (4)
@@ -95,6 +98,7 @@
 #define OUT          (0)
 #define IN           (1)
 
+#define CONFIG_MODULE_BASE          0x44E10000
 
 uint32_t gpio_base[MAX_GPIO_BANKS] = {
 	0x44E07000,
@@ -125,9 +129,6 @@ void gpio_set_direction(int bank, int pin, int direction)
     *gpio_oe_addr[bank] = reg;
 }
 
-
-
-
 void gpio_set(int bank, int pin)
 {
 	*gpio_setdataout_addr[bank] = (1 << pin);
@@ -156,31 +157,56 @@ void gpio_write_bank_from_mirror(int bank)
     *gpio_dataout_addr[bank] = gpio_mirror[bank];
 }
 
-/*
- * Set up a memory regions to access GPIO
- */
+void set_led(int led, int val)
+{
+    if (val)
+        gpio_mirror[led_banks[led]] |= 1 << led_bits[led];
+    else
+        gpio_mirror[led_banks[led]] &= ~(1 << led_bits[led]);
+        gpio_write_bank_from_mirror(led_banks[led]);
+}
+
 void gpio_init()
 {
     int  mem_fd;
 	int bank = 0;
+	int *config;
 	
-	/* open /dev/mem */
+	/* Setup pinmux for pins that are not GPIO already */
+	
 	if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC) ) < 0) {
 		printf("main: can't open /dev/mem \n");
 		exit(-1);
 	}
-	
-	for (bank=0; bank<MAX_GPIO_BANKS; bank++)
-	{
-        gpio_addr[bank]
-            = mmap(
-                    NULL,                   //Any adddress in our space will do
-                    AM335X_GPIO_SIZE,       //Map length
+	config = mmap(  NULL,                   //Any adddress in our space will do
+                    0x2000,                 //Map length
                     PROT_READ|PROT_WRITE,   // Enable reading & writting to mapped memory
                     MAP_SHARED,             //Shared with other processes
                     mem_fd,                 //File to map
-                    gpio_base[bank]         //Offset to GPIO peripheral
+                    CONFIG_MODULE_BASE      //Offset to GPIO peripheral
                   );
+    printf("%08X %08X\n",config[0x8A8>>2], config[0x894>>2]);
+	
+    config[0x8E8>>2] = 0x00000027;  // P8-28 GPIO_88
+    config[0x8EC>>2] = 0x00000027;  // P8-30 GPIO_89
+    config[0x8BC>>2] = 0x00000027;  // P8-40 GPIO_77
+    config[0x8B4>>2] = 0x00000027;  // P8-42 GPIO_75
+    config[0x8A8>>2] = 0x00000027;  // P8-43 GPIO_72
+    
+    printf("%08X\n",config[0x8A8>>2]);
+    
+    /* map access to GPIO banks */
+    
+	for (bank=0; bank<MAX_GPIO_BANKS; bank++)
+	{
+        gpio_addr[bank] = mmap( NULL,                   //Any adddress in our space will do
+                                AM335X_GPIO_SIZE,       //Map length
+                                PROT_READ|PROT_WRITE,   // Enable reading & writting to mapped memory
+                                MAP_SHARED,             //Shared with other processes
+                                mem_fd,                 //File to map
+                                gpio_base[bank]         //Offset to GPIO peripheral
+                              );
+        
         gpio_oe_addr[bank] = gpio_addr[bank] + AM335X_GPIO_OE;             
         gpio_datain_addr[bank] = gpio_addr[bank] + AM335X_GPIO_DATAIN;             
         gpio_dataout_addr[bank] = gpio_addr[bank] + AM335X_GPIO_DATAOUT;             
@@ -210,6 +236,21 @@ int main (int argc, char *argv[])
 	gpio_set_direction(2, 3, OUT);
 	gpio_set_direction(2, 2, IN);
 	gpio_set_direction(2, 1, IN);
+	
+	for (i=0; i<8; i++)
+	    gpio_set_direction(led_banks[i], led_bits[i], OUT);
+	
+	for (i=0; i<10; i++)
+	{
+	    for (j=0; j<8; j++)
+	    {
+	        set_led(j,1);
+	        usleep(100000);
+	        set_led(j,0);
+	        usleep(100000);
+	    }
+	}
+	exit(0);
 
 	for (i=0; i<1000000; i++) {
         tw = 0x5555aaaa;
