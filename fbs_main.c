@@ -185,16 +185,24 @@ void gpio_init()
                     mem_fd,                 //File to map
                     CONFIG_MODULE_BASE      //Offset to GPIO peripheral
                   );
-    printf("%08X %08X\n",config[0x8A8>>2], config[0x894>>2]);
-	
-    config[0x8E8>>2] = 0x00000027;  // P8-28 GPIO_88
-    config[0x8EC>>2] = 0x00000027;  // P8-30 GPIO_89
-    config[0x8BC>>2] = 0x00000027;  // P8-40 GPIO_77
-    config[0x8B4>>2] = 0x00000027;  // P8-42 GPIO_75
-    config[0x8A8>>2] = 0x00000027;  // P8-43 GPIO_72
     
-    printf("%08X\n",config[0x8A8>>2]);
-    
+    if (config[0x8E8>>2] != 0x00000027 ||
+        config[0x8EC>>2] != 0x00000027 ||
+        config[0x8BC>>2] != 0x00000027 ||
+        config[0x8B4>>2] != 0x00000027 ||
+        config[0x8A8>>2] != 0x00000027)
+    {
+        printf("PINMUX settings detected: \n");
+        printf("GPIO88: %08X\n",config[0x8E8>>2]);
+        printf("GPIO89: %08X\n",config[0x8EC>>2]);
+        printf("GPIO77: %08X\n",config[0x8BC>>2]);
+        printf("GPIO75: %08X\n",config[0x8B4>>2]);
+        printf("GPIO72: %08X\n",config[0x8A8>>2]);
+        printf("One or more required GPIO pins have incorrect pinmux settings\n");
+        printf("Please include disable_uboot_overlay_video=1 in /boot/uEnv.txt\n");
+        exit(1);
+    }
+
     /* map access to GPIO banks */
     
 	for (bank=0; bank<MAX_GPIO_BANKS; bank++)
