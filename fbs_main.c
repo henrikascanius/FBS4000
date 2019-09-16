@@ -9,35 +9,13 @@
 
 // #include "fbs_gpio.h"
 
-// define FBS GPIOs
-
-// Input, latched G_i_First_Segment - First Segment was written to DRC by RC4000
-#define GP_SRRQ_BANK        2
-#define GP_SRRQ_BIT         17
-
-// Output, clock to DSA shift register
-#define GP_SRCLK_BANK       0
-#define GP_SRCLK_BIT        26
+// ****************************
+// ***** FBS GPIO INPUTS: *****
+// ****************************
 
 // Input, serial output from DSA shift register
 #define GP_SRDATA_BANK      0
 #define GP_SRDATA_BIT       20
-
-// Input, CP_DSP, clock pulse incrementing Drum Segment Address in DRC
-#define GP_CPDSA_BANK       2
-#define GP_CPDSA_BIT        16
-
-// Output, drum clock to DRC
-#define GP_RDCLK_BANK       2
-#define GP_RDCLK_BIT        4
-
-// Output, drum index to DRC
-#define GP_INDEX_BANK       2
-#define GP_INDEX_BIT        1
-
-// Output, Read Data to DRC
-#define GP_RDDATA_BANK      2
-#define GP_RDDATA_BIT       3
 
 // Input, Write Data from DRC
 #define GP_WRDATA_BANK      1   // SP0(0)
@@ -47,9 +25,38 @@
 #define GP_WE_BANK          1
 #define GP_WE_BIT           14
 
+// Input, CP_DSP, clock pulse incrementing Drum Segment Address in DRC
+#define GP_CPDSA_BANK       2
+#define GP_CPDSA_BIT        16
+
+// Input, latched G_i_First_Segment - First Segment was written to DRC by RC4000
+#define GP_SRRQ_BANK        2
+#define GP_SRRQ_BIT         17
+
+
+// *****************************
+// ***** FBS GPIO OUTPUTS: *****
+// *****************************
+
+// Output, clock to DSA shift register
+#define GP_SRCLK_BANK       0
+#define GP_SRCLK_BIT        26
+
 // Output, Connected status to DRC
 #define GP_CONN_BANK        1
 #define GP_CONN_BIT         29
+
+// Output, drum index to DRC
+#define GP_INDEX_BANK       2
+#define GP_INDEX_BIT        1
+
+// Output, Read Data to DRC
+#define GP_RDDATA_BANK      2
+#define GP_RDDATA_BIT       3
+
+// Output, drum clock to DRC
+#define GP_RDCLK_BANK       2
+#define GP_RDCLK_BIT        4
 
 // LED outputs:
 
@@ -83,7 +90,6 @@ int led_banks[] = {GP_LED0_BANK, GP_LED1_BANK, GP_LED2_BANK, GP_LED3_BANK,
 int led_bits[] =  {GP_LED0_BIT, GP_LED1_BIT, GP_LED2_BIT, GP_LED3_BIT,
                    GP_LED4_BIT, GP_LED5_BIT, GP_LED6_BIT, GP_LED7_BIT};                    
 
-
 #define MAX_GPIO_BANKS              (4)
 
 // GPIO register size
@@ -109,17 +115,17 @@ uint32_t gpio_base[MAX_GPIO_BANKS] = {
 
 void *gpio_addr[MAX_GPIO_BANKS] = { NULL };
 
-unsigned int *gpio_oe_addr[MAX_GPIO_BANKS]                  = { NULL };
-volatile unsigned int *gpio_dataout_addr[MAX_GPIO_BANKS]    = { NULL };
-volatile unsigned int *gpio_datain_addr[MAX_GPIO_BANKS]     = { NULL };
-unsigned int *gpio_setdataout_addr[MAX_GPIO_BANKS]          = { NULL };
-unsigned int *gpio_cleardataout_addr[MAX_GPIO_BANKS]        = { NULL };
+uint32_t *gpio_oe_addr[MAX_GPIO_BANKS]                  = { NULL };
+volatile uint32_t *gpio_dataout_addr[MAX_GPIO_BANKS]    = { NULL };
+volatile uint32_t *gpio_datain_addr[MAX_GPIO_BANKS]     = { NULL };
+uint32_t *gpio_setdataout_addr[MAX_GPIO_BANKS]          = { NULL };
+uint32_t *gpio_cleardataout_addr[MAX_GPIO_BANKS]        = { NULL };
 
-unsigned int gpio_mirror[MAX_GPIO_BANKS];
+uint32_t gpio_mirror[MAX_GPIO_BANKS];
 
 void gpio_set_direction(int bank, int pin, int direction)
 {
-	unsigned int reg;
+	uint32_t reg;
 	reg = *gpio_oe_addr[bank];
 	if (direction == OUT) {
 		reg = reg & ~(1 << pin);
@@ -130,7 +136,7 @@ void gpio_set_direction(int bank, int pin, int direction)
 }
 
 void gpio_set(int bank, int pin)
-{
+{   // Not faster than write the whole mirror...
 	*gpio_setdataout_addr[bank] = (1 << pin);
 	gpio_mirror[bank] |= (1 << pin);
 }
@@ -141,7 +147,7 @@ void gpio_clear(int bank, int pin)
 	gpio_mirror[bank] &= (~(1 << pin));
 }
 
-unsigned int gpio_read_bank(int bank)
+uint32_t gpio_read_bank(int bank)
 {
     return *gpio_datain_addr[bank];
 }
@@ -158,19 +164,19 @@ void gpio_write_bank_from_mirror(int bank)
 }
 
 void set_led(int led, int val)
-{
+{   // LED is on when GPIO out is low
     if (val)
-        gpio_mirror[led_banks[led]] |= 1 << led_bits[led];
-    else
         gpio_mirror[led_banks[led]] &= ~(1 << led_bits[led]);
+    else
+        gpio_mirror[led_banks[led]] |= 1 << led_bits[led];
         gpio_write_bank_from_mirror(led_banks[led]);
 }
 
 void gpio_init()
 {
-    int  mem_fd;
-	int bank = 0;
-	int *config;
+    int mem_fd;
+	int bank = 0, i;
+	uint32_t *config;
 	
 	/* Setup pinmux for pins that are not GPIO already */
 	
@@ -223,13 +229,31 @@ void gpio_init()
     } 
     
 	close(mem_fd); //No need to keep mem_fd open after mmap
-	for ( bank = 0; bank < MAX_GPIO_BANKS; bank++ ) {
+	for (bank = 0; bank < MAX_GPIO_BANKS; bank++) {
 		if (gpio_addr[bank] == MAP_FAILED) {
 			printf("mmap error %d\n", (int)gpio_addr[bank]);//errno also set!
 			exit(-1);
 		}
-		gpio_mirror[bank] = *gpio_datain_addr[bank];
-	}    
+	}
+    
+	gpio_set_direction(GP_SRDATA_BANK, GP_SRDATA_BIT, IN);
+	gpio_set_direction(GP_WRDATA_BANK, GP_WRDATA_BIT, IN);
+	gpio_set_direction(GP_WE_BANK, GP_WE_BIT, IN);
+	gpio_set_direction(GP_CPDSA_BANK, GP_CPDSA_BIT, IN);
+	gpio_set_direction(GP_SRRQ_BANK, GP_SRRQ_BIT, IN);
+
+    gpio_set_direction(GP_SRCLK_BANK, GP_SRCLK_BIT, OUT);
+    gpio_set_direction(GP_CONN_BANK, GP_CONN_BIT, OUT);
+    gpio_set_direction(GP_INDEX_BANK, GP_INDEX_BIT, OUT);
+    gpio_set_direction(GP_RDDATA_BANK, GP_RDDATA_BIT, OUT);
+    gpio_set_direction(GP_RDCLK_BANK, GP_RDCLK_BIT, OUT);
+
+	for (i=0; i<8; i++)
+	    gpio_set_direction(led_banks[i], led_bits[i], OUT);
+	
+	for (bank = 0; bank < MAX_GPIO_BANKS; bank++)
+		gpio_mirror[bank] = *gpio_dataout_addr[bank];
+		
 } // gpio_init
 
 
@@ -239,14 +263,8 @@ int main (int argc, char *argv[])
     int tw;
     int rw;
     int dummy;
+    
 	gpio_init();
-	
-	gpio_set_direction(2, 3, OUT);
-	gpio_set_direction(2, 2, IN);
-	gpio_set_direction(2, 1, IN);
-	
-	for (i=0; i<8; i++)
-	    gpio_set_direction(led_banks[i], led_bits[i], OUT);
 	
 	for (i=0; i<10; i++)
 	{
