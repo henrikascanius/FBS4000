@@ -7,6 +7,8 @@
 #include <string.h>
 #include <fcntl.h>
 
+#include "fbs_log.h"
+
 // #include "fbs_gpio.h"
 
 // ****************************
@@ -254,7 +256,36 @@ void gpio_init()
 	for (bank = 0; bank < MAX_GPIO_BANKS; bank++)
 		gpio_mirror[bank] = *gpio_dataout_addr[bank];
 		
+    gpio_clear(GP_SRCLK_BANK, GP_SRCLK_BIT);
+    gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
+    gpio_clear(GP_INDEX_BANK, GP_INDEX_BIT);
+    gpio_clear(GP_RDDATA_BANK, GP_RDDATA_BIT);
+    gpio_clear(GP_RDCLK_BANK, GP_RDCLK_BIT);
 } // gpio_init
+
+
+int poll_dsa(uint32_t *reg)
+{
+    int i;
+    uint32_t sr = 0;
+    
+    if (!gpio_read_pin(GP_SRRQ_BANK, GP_SRRQ_BIT))
+        return 0;
+    
+    // SRCLK is inverted by IC4C
+    for (i=0; i<19; i++)
+    {
+        gpio_set(GP_SRCLK_BANK, GP_SRCLK_BIT); // CP 1->0
+        sr = (sr >> 1) | (gpio_read_pin(GP_SRDATA_BANK, GP_SRDATA_BIT) << 18);
+        gpio_clear(GP_SRCLK_BANK, GP_SRCLK_BIT); // CP 0->1
+    }
+    *reg = sr;
+    return 1;
+}
+        
+        
+    
+    
 
 
 int main (int argc, char *argv[])
@@ -263,8 +294,12 @@ int main (int argc, char *argv[])
     int tw;
     int rw;
     int dummy;
-    
+ 
+    fbs_openlog();
 	gpio_init();
+	
+	FBS_LOG(G_MISC, "Test message: %d", 10);
+	exit(0);
 	
 	for (i=0; i<10; i++)
 	{
