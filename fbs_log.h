@@ -8,9 +8,10 @@
 
 #define G_SEEK    1
 #define G_DATA    2
+#define G_ERROR   3
 #define G_MISC  256
 
-static uint32_t logmask = G_MISC;
+static uint32_t logmask = 0xffffffff;
 
 #define FBS_LOG(group, args...) \
 do { \

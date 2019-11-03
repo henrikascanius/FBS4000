@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
@@ -125,6 +126,30 @@ uint32_t *gpio_cleardataout_addr[MAX_GPIO_BANKS]        = { NULL };
 
 uint32_t gpio_mirror[MAX_GPIO_BANKS];
 
+#define INVMASK  0x66666600
+#define MAXUNITS 4
+
+int unit_fd[MAXUNITS];
+uint32_t *img[MAXUNITS];
+uint32_t unit_segs[MAXUNITS];
+int seek_error = 0;
+int dirty[4];
+
+int unit_to_led[MAXUNITS] = {0, 1, 2, 3}; 
+
+int selected_unit = -1;
+uint32_t dsa = 0;  // Drum Segment Address
+
+// Track buffer, 4*268 24-bit words
+uint32_t trbuf[4*268];
+
+void abend(char *s)
+{
+    FBS_LOG(G_ERROR, "ABEND: %s", s); 
+    fprintf(stderr, "ABEND: %s\n", s);
+    exit(1);
+}
+
 void gpio_set_direction(int bank, int pin, int direction)
 {
 	uint32_t reg;
@@ -183,7 +208,7 @@ void gpio_init()
 	/* Setup pinmux for pins that are not GPIO already */
 	
 	if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC) ) < 0) {
-		printf("main: can't open /dev/mem \n");
+		fprintf(stderr, "main: can't open /dev/mem \n");
 		exit(-1);
 	}
 	config = mmap(  NULL,                   //Any adddress in our space will do
@@ -200,14 +225,14 @@ void gpio_init()
         config[0x8B4>>2] != 0x00000027 ||
         config[0x8A8>>2] != 0x00000027)
     {
-        printf("PINMUX settings detected: \n");
-        printf("GPIO88: %08X\n",config[0x8E8>>2]);
-        printf("GPIO89: %08X\n",config[0x8EC>>2]);
-        printf("GPIO77: %08X\n",config[0x8BC>>2]);
-        printf("GPIO75: %08X\n",config[0x8B4>>2]);
-        printf("GPIO72: %08X\n",config[0x8A8>>2]);
-        printf("One or more required GPIO pins have incorrect pinmux settings\n");
-        printf("Please include disable_uboot_overlay_video=1 in /boot/uEnv.txt\n");
+        fprintf(stderr, "PINMUX settings detected: \n");
+        fprintf(stderr, "GPIO88: %08X\n",config[0x8E8>>2]);
+        fprintf(stderr, "GPIO89: %08X\n",config[0x8EC>>2]);
+        fprintf(stderr, "GPIO77: %08X\n",config[0x8BC>>2]);
+        fprintf(stderr, "GPIO75: %08X\n",config[0x8B4>>2]);
+        fprintf(stderr, "GPIO72: %08X\n",config[0x8A8>>2]);
+        fprintf(stderr, "One or more required GPIO pins have incorrect pinmux settings\n");
+        fprintf(stderr, "Please include disable_uboot_overlay_video=1 in /boot/uEnv.txt\n");
         exit(1);
     }
 
@@ -233,7 +258,7 @@ void gpio_init()
 	close(mem_fd); //No need to keep mem_fd open after mmap
 	for (bank = 0; bank < MAX_GPIO_BANKS; bank++) {
 		if (gpio_addr[bank] == MAP_FAILED) {
-			printf("mmap error %d\n", (int)gpio_addr[bank]);//errno also set!
+			fprintf(stderr, "mmap error %d\n", (int)gpio_addr[bank]);//errno also set!
 			exit(-1);
 		}
 	}
@@ -263,6 +288,50 @@ void gpio_init()
     gpio_clear(GP_RDCLK_BANK, GP_RDCLK_BIT);
 } // gpio_init
 
+void file_init()
+{
+    char uname[5];
+    char *fname;
+    struct stat sb;
+    int units = 0;
+    
+    strcpy(uname,"UNIT");
+    uname[0] = 0;
+    
+    for (int unit=0; unit<MAXUNITS; unit++)
+    {
+        uname[4] = unit + '0';
+        fname = getenv(uname);
+        if (fname)
+        {
+            if ((unit_fd[unit] = open(uname, O_RDWR|O_SYNC)) < 0)
+            {
+                fprintf(stderr, "File not found: %s\n", fname);
+                exit(1);
+            }
+            if (fstat(unit_fd[unit], &sb)== -1)
+                abend("fstat");
+            if (sb.st_size < 768*4) // At least one track...
+                abend("filesize");
+            img[unit] = mmap(NULL, sb.st_size, PROT_READ|PROT_WRITE,
+                             MAP_PRIVATE | MAP_POPULATE,
+                             unit_fd[unit], 0);
+            if (img[unit] == MAP_FAILED)
+                abend("mmap");
+            unit_segs = sb.st_size / 768;
+            units++;
+        }
+        else
+        {
+            unit_fd[unit] = -1;
+            img[unit] = NULL;
+            unit_segs[unit] = 0;
+        }
+    }
+    if (!units)
+        abend("No disk units");
+} // file_init
+
 
 int poll_dsa(uint32_t *reg)
 {
@@ -282,12 +351,82 @@ int poll_dsa(uint32_t *reg)
     *reg = sr;
     return 1;
 }
+
+void fetch_track()
+{
+    // Build track image from file data
+    uint32_t track = dsa >> 2;
+    uint32_t *imgptr;
+    int tridx = 0;
+    uint32_t parity = 0;
+    
+    seek_error = (track << 2) > max_segs[selected_unit];
+    if (!seek_error)
+    {
+        imgptr = img[selected_unit] + track*768; // (768 b / 4b/w) * 4 seg/tr
+        for (int sect=0; sect<4; sect++)
+        {
+            // We keep the word numbering of the DRC...
+            // Sector data occupies word 0..255. Reformat to 24-bit
+            //    24-bit:     32-bit (file):
+            //      cba0            dcba                           
+            //      fed0            hgfe
+            //      ihg0            lkji
+            //      lkj0
+            for int i=0; i<256/4; i++)
+            {
+                parity ^= (trbuf[tridx++] = (imgptr[0] << 8) ^ INVMASK);
+                parity ^= (trbuf[tridx++] = ((((imgptr[0] & 0xff000000) >> 16) | (imgptr[1] << 16))) ^INVMASK);
+                parity ^= (trbuf[tridx++] = ((((imgptr[1] & 0xffff0000) >> 8)  | (imgptr[2] << 24))) ^INVMASK);
+                parity ^= (trbuf[tridx++] = (imgptr[2] & 0xffffff00) ^INVMASK);
+                imgptr += 3;
+            }
+            trbuf[tridx++] = parity;
+            for int i=0; i<11; i++)
+            {
+                trbuf[tridx++] = (((track << 2) + sect)<< 8) | 0x80000000; See DRC018
+            }
+        }
+        bzero(dirty, sizeof(dirty));
+    }
+}
+
+void flush_track()
+{
+    // Update dirty sectors in file data
+    uint32_t track = dsa >> 2;
+    uint32_t *imgptr;
+    int tridx;
+
+    for (int sect=0; sect<4; sect++)
+    {
+        if (dirty[sect])
+        {
+            imgptr = img[selected_unit] + track*768 + sect*(768/4);
+            tridx = sect*268;
+            for int i=0; i<256/4; i++)
+            {
+                (imgptr++)* = (track[tridx] >> 8) | ((track[tridx+1] & 0x0000ff00) << 16);
+                (imgptr++)* = (track[tridx+1] >> 16) | ((track[tridx+2] & 0x00ffff00) << 8);
+                (imgptr++)* = (track[tridx+2] >> 24) | (track[tridx+3] & 0xffffff00);
+                tridx += 4;
+            }
+        }
+    }
+}
+            
+
+void select_unit(int unit);
+{
+    if (selected_unit >= 0)
+        set_led(unit_to_led[selected_unit], 0);
+    selected_unit = unit;
+    fetch_track();
+    set_led(unit_to_led[unit], 1);
+    FBS_LOG(G_SEEK, "Unit sel: %d", unit);
+}
         
         
-    
-    
-
-
 int main (int argc, char *argv[])
 {
 	int i = 0, j = 0;
@@ -297,22 +436,21 @@ int main (int argc, char *argv[])
  
     fbs_openlog();
 	gpio_init();
+	file_init();
 	
-	FBS_LOG(G_MISC, "Test message: %d", 10);
-	exit(0);
 	
-	for (i=0; i<10; i++)
-	{
-	    for (j=0; j<8; j++)
-	    {
-	        set_led(j,1);
-	        usleep(100000);
-	        set_led(j,0);
-	        usleep(100000);
-	    }
-	}
-	exit(0);
+	FBS_LOG(G_MISC, "Started");
 
+	// Short LED test at startup
+    for (j=0; j<8; j++)
+    {
+        set_led(j,1);
+        usleep(100000);
+        set_led(j,0);
+        usleep(100000);
+    }
+
+    
 	for (i=0; i<1000000; i++) {
         tw = 0x5555aaaa;
         for (j=0; j<24; j++) {
