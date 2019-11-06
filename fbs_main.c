@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
@@ -134,8 +135,17 @@ uint32_t *img[MAXUNITS];
 uint32_t unit_segs[MAXUNITS];
 int seek_error = 0;
 int dirty[4];
+int disconnected = 0;
+uint32_t trackcnt = 0;
 
-int unit_to_led[MAXUNITS] = {0, 1, 2, 3}; 
+int unit_to_led[MAXUNITS] = {0, 1, 2, 3};
+
+#define ACC_LED         4
+#define WR_LED          5
+#define ERR_LED         6
+#define ERR_LATCH_LED   7
+
+static uint32_t ledoff_at[8];  // track count for led off
 
 int selected_unit = -1;
 uint32_t dsa = 0;  // Drum Segment Address
@@ -190,6 +200,9 @@ void gpio_write_bank_from_mirror(int bank)
     *gpio_dataout_addr[bank] = gpio_mirror[bank];
 }
 
+// Update GPIO bank 2 w. clk, data, index bits
+#define UPD_DRC *gpio_dataout_addr[2] = gpio_mirror[2]
+
 void set_led(int led, int val)
 {   // LED is on when GPIO out is low
     if (val)
@@ -197,6 +210,21 @@ void set_led(int led, int val)
     else
         gpio_mirror[led_banks[led]] |= 1 << led_bits[led];
         gpio_write_bank_from_mirror(led_banks[led]);
+}
+
+void flash_led(int led)
+{
+    set_led(led, 1)
+    led_off_at[led] = trackcnt + 6;
+}
+
+void upd_leds()
+{
+    for (led=0; led<8; led++)
+    {
+        if (led_off_at[led] == trackcnt)
+            set_led(led, 0);
+    }
 }
 
 void gpio_init()
@@ -283,7 +311,7 @@ void gpio_init()
 		
     gpio_clear(GP_SRCLK_BANK, GP_SRCLK_BIT);
     gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
-    gpio_clear(GP_INDEX_BANK, GP_INDEX_BIT);
+    gpio_set(GP_INDEX_BANK, GP_INDEX_BIT);
     gpio_clear(GP_RDDATA_BANK, GP_RDDATA_BIT);
     gpio_clear(GP_RDCLK_BANK, GP_RDCLK_BIT);
 } // gpio_init
@@ -352,13 +380,52 @@ int poll_dsa(uint32_t *reg)
     return 1;
 }
 
+uint32_t time_ms()
+{
+    struct timeval tv;
+    
+    gettimeofday(tv);
+    return tv.tv_sec*1000 + tv.tv_usec/1000;
+}
+
+void set_connected(int conn)
+{
+    if (conn)
+        gpio_set(GP_CONN_BANK, GP_CONN_BIT);
+    else
+        gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
+}
+
+void select_unit(int unit);
+{
+    if (unit == selected_unit)
+        return;
+    if (selected_unit >= 0)
+        set_led(unit_to_led[selected_unit], 0);
+    selected_unit = unit;
+    if (img[unit])
+    {
+        fetch_track();
+        set_led(unit_to_led[unit], 1);
+        FBS_LOG(G_SEEK, "Unit sel: %d", unit);
+        set_coonected(1);
+        disconnected = 0;
+    }
+    else
+    {
+        FBS_LOG(G_SEEK, "UNKNOWN Unit sel: %d", unit);
+        set_connected(0);
+        disconnected = 1;
+    }
+}
+        
 void fetch_track()
 {
     // Build track image from file data
     uint32_t track = dsa >> 2;
     uint32_t *imgptr;
     int tridx = 0;
-    uint32_t parity = 0;
+    uint32_t parity;
     
     seek_error = (track << 2) > max_segs[selected_unit];
     if (!seek_error)
@@ -366,6 +433,7 @@ void fetch_track()
         imgptr = img[selected_unit] + track*768; // (768 b / 4b/w) * 4 seg/tr
         for (int sect=0; sect<4; sect++)
         {
+            parity =  = (((track<<2) + sect) << 8) | 0x80000000;
             // We keep the word numbering of the DRC...
             // Sector data occupies word 0..255. Reformat to 24-bit
             //    24-bit:     32-bit (file):
@@ -406,26 +474,163 @@ void flush_track()
             tridx = sect*268;
             for int i=0; i<256/4; i++)
             {
-                (imgptr++)* = (track[tridx] >> 8) | ((track[tridx+1] & 0x0000ff00) << 16);
-                (imgptr++)* = (track[tridx+1] >> 16) | ((track[tridx+2] & 0x00ffff00) << 8);
-                (imgptr++)* = (track[tridx+2] >> 24) | (track[tridx+3] & 0xffffff00);
+                *(imgptr++) = (track[tridx] >> 8) | ((track[tridx+1] & 0x0000ff00) << 16);
+                *(imgptr++) = (track[tridx+1] >> 16) | ((track[tridx+2] & 0x00ffff00) << 8);
+                *(imgptr++) = (track[tridx+2] >> 24) | (track[tridx+3] & 0xffffff00);
                 tridx += 4;
             }
+            dirty[sect] = 0;
         }
     }
 }
-            
 
-void select_unit(int unit);
+int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
 {
-    if (selected_unit >= 0)
-        set_led(unit_to_led[selected_unit], 0);
-    selected_unit = unit;
-    fetch_track();
-    set_led(unit_to_led[unit], 1);
-    FBS_LOG(G_SEEK, "Unit sel: %d", unit);
+    // Common RD/WR loop. Writedata collected in wbuf, calc. parity appened.
+    // wbuf must hold (words+1) words 
+    int32_t w;
+    int wr_ena;
+    uint32_t gpb1;
+    uint32_t parity = 0;
+    uint32_t wr_word = 0;
+    
+    for (int i=0; i<words; i++)
+    {
+        w = (int32_t)(*(ptr++));
+        for (j=0; j<24; j++)
+        {
+            // Get writedata, in case it's write...
+            gpb1 = *gpio_datain_addr[GP_WRDATA_BANK];
+            wr_word = (wr_word<<1) | ((gpb1 & (1<<GP_WRDATA_BIT)) != 0);
+            
+            // Data is sampled 200 ns after pos edge on clk-GPIO. 
+            // Output sigs are inverted by 74LS02
+            gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
+            gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((w>=0) << GP_RDDATA_BIT);
+            UPD_DRC;
+            gpio_mirror[2] = gpio_mirror[2]  & ~(1<<GP_RDCLK_BIT);
+            UPD_DRC;
+            w += w;
+        }
+        // Store wrdate, calc parity
+        parity ^= (*(wbuf++) = (wr_word << 8) ^ INVMASK); 
+    }
+    *wbuf = parity; // append calculated parity (w.o. segm addr word)
+    return (gpb1 & (1<<GP_WE_BIT)) == 0;  // WE in same bank as WR_DATA, WE is inverted at 68A1
 }
+
+int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
+{
+    // Send address words from ptr
+    // Handle track change; return 1 if WE
+    // Collect address word (w267) from DRC, for write check
+    int32_t w;
+    int cpdsa = 0;
+    int chtrack = 0;
+    uint32_t newdsa;
+    uint32_t nonsense[11];
+    
+    // Handle Word257:
+    w = (int32_t)(*(ptr++));
+    for (j=0; j<24; j++)
+    {
+        // Data is sampled 200 ns after pos edge on clk-GPIO. 
+        // All sigs are inverted by 74LS02
+        gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
+        gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((w>=0) << GP_RDDATA_BIT);
+        if (index_sector && (j==3))
+            gpio_mirror[2] &= ~(1<<GP_INDEX_BIT)
+        else
+            gpio_mirror[2] |= 1<<GP_INDEX_BIT;
+        UPD_DRC;
+        gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
+        UPD_DRC;
+        cpdsa |= *gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT;
+        w += w;
+    }
+    
+    if (poll_dsa(&newdsa))
+        chtrack = 1;
+    else
+    {
+        if (cpdsa && index_sector)
+        {
+            chtrack = 1;
+            newdsa = dsa + 4;
+        }
+    }   
+     
+    if (chtrack)
+    {
+        flush_track();
+        select_unit(newdsa >> 17);
+        dsa = newdsa & 0x1FFFF;
+        fetch_track();  // Changes the data ptr points at!!
+        flash_led(ACC_LED);
+    }
         
+    // Send 258-267
+    wr_ena = send_rcv_words(ptr, 10, nonsense);
+    *w267 = nonsense[9] ^ INVMASK; // Magic!
+    return wr_ena;
+}
+
+void main_loop()
+{
+    uint32_t *trp;
+    unit32_t wr_buf[258];
+    int wr_ena = 0;
+    uint32_t w267_DRC;
+    int wr_fault = 0;
+    uint32_t calc_parity;
+    uint32_t segm_addr_w;
+    uint32_t starttime, laptime, now;
+
+    starttime = time_ms();
+    laptime = starttime;
+    while (1)
+    {
+        trp = trbuf; 
+        for (sect=0; sect<4; sect++)
+        {
+            send_rcv_words(trp, 257, wr_buf); // data + parity
+            set_connected(!disconnected);  // Clear temp. error status
+            if (wr_ena)
+            {
+                calc_parity = wr_buf[257] ^ segm_addr_w; 
+                wr_fault |= wr_buf[256] != calc_parity;
+                if (wr_fault)
+                {
+                    set_connected(0);  // Only means we have to signal write error
+                    FBS_LOG(G_ERROR, "WRITE ERROR Addr: %08x Exp: %08x Parity: %08x Exp: %08x",
+                                     w267_DRC, segm_addr_w, wr_buf[256], calc_parity);
+                    flash_led(ERR_LED);
+                    set_led(ERR_LATCH_LED, 1);
+                }
+                else
+                {   // Write OK: Update sector in trbuf
+                    memcpy(trbuf+(sect*268), wr_buf, 257*4);
+                    dirty[sect] = 1;
+                    flash_led(WR_LED);
+                }
+            }
+            trp += 257;
+            wr_ena = do_word_257_267(trp, sect==3, &w267_DRC);
+            segm_addr_w = ((((dsa>>2) + sect) << 8) | 0x80000000);
+            wr_fault = wr_ena && w267_DRC != segm_addr_w;
+            trp += 11;
+        }
+        trackcnt++;
+        upd_leds();
+        if (!(trackcnt & 2047))
+        {
+            now = time_ms();
+            FBS_LOG(G_STAT, "Avg rotation time: %d ms", (now-laptime)/2048);
+            laptime = now;
+        }
+    }
+}
+
         
 int main (int argc, char *argv[])
 {
@@ -438,7 +643,6 @@ int main (int argc, char *argv[])
 	gpio_init();
 	file_init();
 	
-	
 	FBS_LOG(G_MISC, "Started");
 
 	// Short LED test at startup
@@ -450,6 +654,19 @@ int main (int argc, char *argv[])
         usleep(100000);
     }
 
+    
+    for (unit=0; unit<MAXUNITS; unit++)
+    {
+        if (img[unit])
+        {
+            select_unit(unit);
+            break;
+        }
+    }
+    dsa = 0;
+    fetch_track();
+    
+    main_loop();
     
 	for (i=0; i<1000000; i++) {
         tw = 0x5555aaaa;
