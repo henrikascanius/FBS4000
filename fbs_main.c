@@ -138,12 +138,12 @@ int dirty[4];
 int disconnected = 0;
 uint32_t trackcnt = 0;
 
-int unit_to_led[MAXUNITS] = {0, 1, 2, 3};
+int unit_to_led[MAXUNITS] = {7, 6, 5, 4};
 
-#define ACC_LED         4
-#define WR_LED          5
-#define ERR_LED         6
-#define ERR_LATCH_LED   7
+#define ACC_LED         3
+#define WR_LED          2
+#define ERR_LED         1
+#define ERR_LATCH_LED   0
 
 static uint32_t ledoff_at[8];  // track count for led off
 
@@ -214,15 +214,15 @@ void set_led(int led, int val)
 
 void flash_led(int led)
 {
-    set_led(led, 1)
-    led_off_at[led] = trackcnt + 6;
+    set_led(led, 1);
+    ledoff_at[led] = trackcnt + 6;
 }
 
 void upd_leds()
 {
-    for (led=0; led<8; led++)
+    for (int led=0; led<8; led++)
     {
-        if (led_off_at[led] == trackcnt)
+        if (ledoff_at[led] == trackcnt)
             set_led(led, 0);
     }
 }
@@ -346,7 +346,7 @@ void file_init()
                              unit_fd[unit], 0);
             if (img[unit] == MAP_FAILED)
                 abend("mmap");
-            unit_segs = sb.st_size / 768;
+            unit_segs[unit] = sb.st_size / 768;
             units++;
         }
         else
@@ -384,7 +384,7 @@ uint32_t time_ms()
 {
     struct timeval tv;
     
-    gettimeofday(tv);
+    gettimeofday(&tv, NULL);
     return tv.tv_sec*1000 + tv.tv_usec/1000;
 }
 
@@ -396,7 +396,7 @@ void set_connected(int conn)
         gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
 }
 
-void select_unit(int unit);
+void select_unit(int unit)
 {
     if (unit == selected_unit)
         return;
@@ -427,13 +427,13 @@ void fetch_track()
     int tridx = 0;
     uint32_t parity;
     
-    seek_error = (track << 2) > max_segs[selected_unit];
+    seek_error = (track << 2) > max_unit_segs[selected_unit];
     if (!seek_error)
     {
         imgptr = img[selected_unit] + track*768; // (768 b / 4b/w) * 4 seg/tr
         for (int sect=0; sect<4; sect++)
         {
-            parity =  = (((track<<2) + sect) << 8) | 0x80000000;
+            parity = (((track<<2) + sect) << 8) | 0x80000000;
             // We keep the word numbering of the DRC...
             // Sector data occupies word 0..255. Reformat to 24-bit
             //    24-bit:     32-bit (file):
@@ -441,7 +441,7 @@ void fetch_track()
             //      fed0            hgfe
             //      ihg0            lkji
             //      lkj0
-            for int i=0; i<256/4; i++)
+            for (int i=0; i<256/4; i++)
             {
                 parity ^= (trbuf[tridx++] = (imgptr[0] << 8) ^ INVMASK);
                 parity ^= (trbuf[tridx++] = ((((imgptr[0] & 0xff000000) >> 16) | (imgptr[1] << 16))) ^INVMASK);
@@ -450,9 +450,9 @@ void fetch_track()
                 imgptr += 3;
             }
             trbuf[tridx++] = parity;
-            for int i=0; i<11; i++)
+            for (int i=0; i<11; i++)
             {
-                trbuf[tridx++] = (((track << 2) + sect)<< 8) | 0x80000000; See DRC018
+                trbuf[tridx++] = (((track << 2) + sect)<< 8) | 0x80000000; // See DRC018
             }
         }
         bzero(dirty, sizeof(dirty));
@@ -472,11 +472,11 @@ void flush_track()
         {
             imgptr = img[selected_unit] + track*768 + sect*(768/4);
             tridx = sect*268;
-            for int i=0; i<256/4; i++)
+            for (int i=0; i<256/4; i++)
             {
-                *(imgptr++) = (track[tridx] >> 8) | ((track[tridx+1] & 0x0000ff00) << 16);
-                *(imgptr++) = (track[tridx+1] >> 16) | ((track[tridx+2] & 0x00ffff00) << 8);
-                *(imgptr++) = (track[tridx+2] >> 24) | (track[tridx+3] & 0xffffff00);
+                *(imgptr++) = (trbuf[tridx] >> 8) | ((trbuf[tridx+1] & 0x0000ff00) << 16);
+                *(imgptr++) = (trbuf[tridx+1] >> 16) | ((trbuf[tridx+2] & 0x00ffff00) << 8);
+                *(imgptr++) = (trbuf[tridx+2] >> 24) | (trbuf[tridx+3] & 0xffffff00);
                 tridx += 4;
             }
             dirty[sect] = 0;
@@ -497,7 +497,7 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
     for (int i=0; i<words; i++)
     {
         w = (int32_t)(*(ptr++));
-        for (j=0; j<24; j++)
+        for (int j=0; j<24; j++)
         {
             // Get writedata, in case it's write...
             gpb1 = *gpio_datain_addr[GP_WRDATA_BANK];
@@ -529,17 +529,18 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     int chtrack = 0;
     uint32_t newdsa;
     uint32_t nonsense[11];
+    int wr_ena;
     
     // Handle Word257:
     w = (int32_t)(*(ptr++));
-    for (j=0; j<24; j++)
+    for (int j=0; j<24; j++)
     {
         // Data is sampled 200 ns after pos edge on clk-GPIO. 
         // All sigs are inverted by 74LS02
         gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
         gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((w>=0) << GP_RDDATA_BIT);
         if (index_sector && (j==3))
-            gpio_mirror[2] &= ~(1<<GP_INDEX_BIT)
+            gpio_mirror[2] &= ~(1<<GP_INDEX_BIT);
         else
             gpio_mirror[2] |= 1<<GP_INDEX_BIT;
         UPD_DRC;
@@ -578,7 +579,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
 void main_loop()
 {
     uint32_t *trp;
-    unit32_t wr_buf[258];
+    uint32_t wr_buf[258];
     int wr_ena = 0;
     uint32_t w267_DRC;
     int wr_fault = 0;
@@ -591,7 +592,7 @@ void main_loop()
     while (1)
     {
         trp = trbuf; 
-        for (sect=0; sect<4; sect++)
+        for (int sect=0; sect<4; sect++)
         {
             send_rcv_words(trp, 257, wr_buf); // data + parity
             set_connected(!disconnected);  // Clear temp. error status
@@ -655,7 +656,7 @@ int main (int argc, char *argv[])
     }
 
     
-    for (unit=0; unit<MAXUNITS; unit++)
+    for (int unit=0; unit<MAXUNITS; unit++)
     {
         if (img[unit])
         {
@@ -667,22 +668,4 @@ int main (int argc, char *argv[])
     fetch_track();
     
     main_loop();
-    
-	for (i=0; i<1000000; i++) {
-        tw = 0x5555aaaa;
-        for (j=0; j<24; j++) {
-            // gpio_set(2, 3);
-            gpio_mirror[2] |= (1<<3);
-	        gpio_write_bank_from_mirror(2);
-	        
-            rw = (rw << 1) | gpio_read_pin(2, 1);
-            if (tw & 1)
-    	        gpio_mirror[2] = (gpio_mirror[2] & ~(1 << 3)) | (1 << 2);
-            else
-    	        gpio_mirror[2] = (gpio_mirror[2] & ~(1 << 3)) & ~(1 << 2);
-	        gpio_write_bank_from_mirror(2);
-            tw >>= 1;
-            dummy = gpio_read_pin(2, 1);
-        }
-	}
 }
