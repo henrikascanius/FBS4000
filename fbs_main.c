@@ -11,6 +11,8 @@
 
 #include "fbs_log.h"
 
+#define STANDALONE_TEST 1
+
 // #include "fbs_gpio.h"
 
 // ****************************
@@ -318,13 +320,13 @@ void gpio_init()
 
 void file_init()
 {
-    char uname[5];
+    char uname[6];
     char *fname;
     struct stat sb;
     int units = 0;
     
     strcpy(uname,"UNIT");
-    uname[0] = 0;
+    uname[5] = 0;
     
     for (int unit=0; unit<MAXUNITS; unit++)
     {
@@ -396,29 +398,6 @@ void set_connected(int conn)
         gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
 }
 
-void select_unit(int unit)
-{
-    if (unit == selected_unit)
-        return;
-    if (selected_unit >= 0)
-        set_led(unit_to_led[selected_unit], 0);
-    selected_unit = unit;
-    if (img[unit])
-    {
-        fetch_track();
-        set_led(unit_to_led[unit], 1);
-        FBS_LOG(G_SEEK, "Unit sel: %d", unit);
-        set_coonected(1);
-        disconnected = 0;
-    }
-    else
-    {
-        FBS_LOG(G_SEEK, "UNKNOWN Unit sel: %d", unit);
-        set_connected(0);
-        disconnected = 1;
-    }
-}
-        
 void fetch_track()
 {
     // Build track image from file data
@@ -427,7 +406,7 @@ void fetch_track()
     int tridx = 0;
     uint32_t parity;
     
-    seek_error = (track << 2) > max_unit_segs[selected_unit];
+    seek_error = (track << 2) > unit_segs[selected_unit];
     if (!seek_error)
     {
         imgptr = img[selected_unit] + track*768; // (768 b / 4b/w) * 4 seg/tr
@@ -459,6 +438,29 @@ void fetch_track()
     }
 }
 
+void select_unit(int unit)
+{
+    if (unit == selected_unit)
+        return;
+    if (selected_unit >= 0)
+        set_led(unit_to_led[selected_unit], 0);
+    selected_unit = unit;
+    if (img[unit])
+    {
+        fetch_track();
+        set_led(unit_to_led[unit], 1);
+        FBS_LOG(G_SEEK, "Unit sel: %d", unit);
+        set_connected(1);
+        disconnected = 0;
+    }
+    else
+    {
+        FBS_LOG(G_SEEK, "UNKNOWN Unit sel: %d", unit);
+        set_connected(0);
+        disconnected = 1;
+    }
+}
+        
 void flush_track()
 {
     // Update dirty sectors in file data
@@ -510,6 +512,7 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
             UPD_DRC;
             gpio_mirror[2] = gpio_mirror[2]  & ~(1<<GP_RDCLK_BIT);
             UPD_DRC;
+            UPD_DRC;  // For correct timing
             w += w;
         }
         // Store wrdate, calc parity
@@ -546,6 +549,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         UPD_DRC;
         gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
         UPD_DRC;
+        UPD_DRC;  // For correct timing
         cpdsa |= *gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT;
         w += w;
     }
@@ -573,6 +577,9 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     // Send 258-267
     wr_ena = send_rcv_words(ptr, 10, nonsense);
     *w267 = nonsense[9] ^ INVMASK; // Magic!
+#ifdef STANDALONE_TEST
+    return 0;
+#endif
     return wr_ena;
 }
 
