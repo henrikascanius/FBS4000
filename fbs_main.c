@@ -382,12 +382,9 @@ int poll_dsa(uint32_t *reg)
     return 1;
 }
 
-uint32_t time_ms()
+uint32_t elapsed_us(struct timeval tv, struct timeval tbase)
 {
-    struct timeval tv;
-    
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec*1000 + tv.tv_usec/1000;
+    return (tv.tv_sec - tbase.tv_sec)*1000000 + tv.tv_usec - tbase.tv_usec;
 }
 
 void set_connected(int conn)
@@ -449,13 +446,13 @@ void select_unit(int unit)
     {
         fetch_track();
         set_led(unit_to_led[unit], 1);
-        FBS_LOG(G_SEEK, "Unit sel: %d", unit);
+        FBS_LOG(G_SEEK, "Unit select: %d", unit);
         set_connected(1);
         disconnected = 0;
     }
     else
     {
-        FBS_LOG(G_SEEK, "UNKNOWN Unit sel: %d", unit);
+        FBS_LOG(G_SEEK, "UNKNOWN Unit select: %d", unit);
         set_connected(0);
         disconnected = 1;
     }
@@ -507,10 +504,11 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
             
             // Data is sampled 200 ns after pos edge on clk-GPIO. 
             // Output sigs are inverted by 74LS02
-            gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
-            gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((w>=0) << GP_RDDATA_BIT);
+            gpio_mirror[2] = (gpio_mirror[2] & ~(1<<GP_RDDATA_BIT)) |
+                             (1<<GP_RDCLK_BIT) |
+                             ((w>=0) << GP_RDDATA_BIT);
             UPD_DRC;
-            gpio_mirror[2] = gpio_mirror[2]  & ~(1<<GP_RDCLK_BIT);
+            gpio_mirror[2] &= ~(1<<GP_RDCLK_BIT);
             UPD_DRC;
             UPD_DRC;  // For correct timing
             w += w;
@@ -555,13 +553,17 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     }
     
     if (poll_dsa(&newdsa))
+    {
         chtrack = 1;
+        FBS_LOG(G_SEEK, "New DSA: %d", newdsa);
+    }
     else
     {
         if (cpdsa && index_sector)
         {
             chtrack = 1;
             newdsa = dsa + 4;
+            FBS_LOG(G_SEEK, "Incr DSA: %d", newdsa);
         }
     }   
      
@@ -592,10 +594,13 @@ void main_loop()
     int wr_fault = 0;
     uint32_t calc_parity;
     uint32_t segm_addr_w;
-    uint32_t starttime, laptime, now;
+    struct timeval starttime, laptime, now;
+    struct timeval lap2;
+    uint32_t tr_time, tmin=1000000, tmax=0;
 
-    starttime = time_ms();
+    gettimeofday(&starttime, NULL);
     laptime = starttime;
+    lap2 = laptime;
     while (1)
     {
         trp = trbuf; 
@@ -619,6 +624,10 @@ void main_loop()
                 {   // Write OK: Update sector in trbuf
                     memcpy(trbuf+(sect*268), wr_buf, 257*4);
                     dirty[sect] = 1;
+                    FBS_LOG(G_DATA, "Write data: Sector: %d Data[0..1]: %06X %06X",
+                                    (dsa & 0x1fffc)+sect,
+                                    wr_buf[0] >> 8,
+                                    wr_buf[1] >> 8);
                     flash_led(WR_LED);
                 }
             }
@@ -630,11 +639,28 @@ void main_loop()
         }
         trackcnt++;
         upd_leds();
-        if (!(trackcnt & 2047))
+        
+        // Monitor min/max rotation time
+        gettimeofday(&now, NULL);
+        tr_time = elapsed_us(now, lap2);
+        lap2 = now;
+        if (tr_time > tmax)
+            tmax = tr_time; 
+        if (tr_time < tmin)
+            tmin = tr_time;
+        
+        if (!(trackcnt & 127))
         {
-            now = time_ms();
-            FBS_LOG(G_STAT, "Avg rotation time: %d ms", (now-laptime)/2048);
-            laptime = now;
+            flush_track(); // Don't let written data get stuck in trackbuf
+            if (!(trackcnt & 2047))
+            {
+                gettimeofday(&now, NULL);
+                FBS_LOG(G_STAT, "Min/max/avg rotation time: %d/%d/%d us",
+                         tmin, tmax, elapsed_us(now, laptime)/2048);
+                tmin = 1000000;
+                tmax = 0;
+                laptime = now;
+            }
         }
     }
 }
