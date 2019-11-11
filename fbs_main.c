@@ -433,6 +433,11 @@ void fetch_track()
         }
         bzero(dirty, sizeof(dirty));
     }
+    else
+    {
+        // seek error, make sync. error on DRC
+        bzero(trbuf, sizeof(trbuf));
+    }
 }
 
 void select_unit(int unit)
@@ -554,15 +559,16 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     
     if (poll_dsa(&newdsa))
     {
-        chtrack = 1;
-        FBS_LOG(G_SEEK, "New DSA: %d", newdsa);
+        chtrack = ((newdsa & 0x7fffc) != (dsa & 0x7fffc)) ||
+                  ((newdsa >> 17) != selected_unit);
+        FBS_LOG(G_SEEK, "New Unit, DSA: %d %d", newdsa >> 17, newdsa & 0x1FFFF);
     }
     else
     {
-        if (cpdsa && index_sector)
+        if (cpdsa)
         {
-            chtrack = 1;
-            newdsa = dsa + 4;
+            newdsa = ((dsa+1) & 0x1FFFF) | (selected_unit << 17);
+            chtrack = (newdsa & 3) == 0;
             FBS_LOG(G_SEEK, "Incr DSA: %d", newdsa);
         }
     }   
@@ -574,6 +580,10 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         dsa = newdsa & 0x1FFFF;
         fetch_track();  // Changes the data ptr points at!!
         flash_led(ACC_LED);
+    }
+    else
+    {
+        dsa = newdsa & 0x1FFFF;
     }
         
     // Send 258-267
@@ -615,8 +625,8 @@ void main_loop()
                 if (wr_fault)
                 {
                     set_connected(0);  // Only means we have to signal write error
-                    FBS_LOG(G_ERROR, "WRITE ERROR Addr: %08x Exp: %08x Parity: %08x Exp: %08x",
-                                     w267_DRC, segm_addr_w, wr_buf[256], calc_parity);
+                    FBS_LOG(G_ERROR, "WRITE ERROR Segm: %d Addr: %08x Exp: %08x Parity: %08x Exp: %08x",
+                                     dsa, w267_DRC, segm_addr_w, wr_buf[256], calc_parity);
                     flash_led(ERR_LED);
                     set_led(ERR_LATCH_LED, 1);
                 }
@@ -633,8 +643,8 @@ void main_loop()
             }
             trp += 257;
             wr_ena = do_word_257_267(trp, sect==3, &w267_DRC);
-            segm_addr_w = ((((dsa>>2) + sect) << 8) | 0x80000000);
-            wr_fault = wr_ena && w267_DRC != segm_addr_w;
+            segm_addr_w = ((((dsa & 0x1FFFC) + sect) << 8) | 0x80000000);
+            wr_fault = wr_ena && ((w267_DRC != segm_addr_w) || seek_error);
             trp += 11;
         }
         trackcnt++;
