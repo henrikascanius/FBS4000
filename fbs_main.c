@@ -1,3 +1,7 @@
+// FBS4000 - Future Backing Storage for RC4000 w. DRC401 and a BeagleBone (tm)
+// (c) 2019 by Henrik Ascanius Jacobsen, Dansk Datahistorisk Forening
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -5,15 +9,14 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
 
 #include "fbs_log.h"
 
-#define STANDALONE_TEST 1
-
-// #include "fbs_gpio.h"
+#define STANDALONE_TEST 1  // For timing tests on unconnected BB
 
 // ****************************
 // ***** FBS GPIO INPUTS: *****
@@ -32,11 +35,11 @@
 #define GP_WE_BIT           14
 
 // Input, CP_DSP, clock pulse incrementing Drum Segment Address in DRC
-#define GP_CPDSA_BANK       2
+#define GP_CPDSA_BANK       1
 #define GP_CPDSA_BIT        16
 
 // Input, latched G_i_First_Segment - First Segment was written to DRC by RC4000
-#define GP_SRRQ_BANK        2
+#define GP_SRRQ_BANK        1
 #define GP_SRRQ_BIT         17
 
 
@@ -133,7 +136,7 @@ uint32_t gpio_mirror[MAX_GPIO_BANKS];
 #define MAXUNITS 4
 
 int unit_fd[MAXUNITS];
-uint32_t *img[MAXUNITS];
+static uint32_t *img[MAXUNITS];
 uint32_t unit_segs[MAXUNITS];
 int seek_error = 0;
 int dirty[4];
@@ -318,12 +321,29 @@ void gpio_init()
     gpio_clear(GP_RDCLK_BANK, GP_RDCLK_BIT);
 } // gpio_init
 
+int cmd(char *cmd)
+{   // Execute a shell command
+	int pstatus;
+	FBS_LOG(G_MISC, "Execute command: %s", cmd);
+	pid_t pid = fork();
+	if (pid==-1) abend("fork, cmd");
+	if (pid != 0) {	waitpid(pid, &pstatus, 0); return pstatus; }
+	execlp("sh", "sh", "-c", cmd, NULL);
+	abend("exec, cmd");
+}
+
 void file_init()
 {
     char uname[6];
     char *fname;
     struct stat sb;
     int units = 0;
+    char *startcmd;
+    
+    // Intended to e.g. set fs in RW mode
+    startcmd = getenv("FBS_START");
+    if (startcmd)
+        cmd(startcmd);
     
     strcpy(uname,"UNIT");
     uname[5] = 0;
@@ -334,6 +354,7 @@ void file_init()
         fname = getenv(uname);
         if (fname)
         {
+            // unit_fd not used at present, fd could be closed after each mmap
             if ((unit_fd[unit] = open(uname, O_RDWR|O_SYNC)) < 0)
             {
                 fprintf(stderr, "File not found: %s\n", fname);
@@ -362,6 +383,26 @@ void file_init()
         abend("No disk units");
 } // file_init
 
+void file_close()
+{
+    char *stopcmd;
+    
+    for (int unit=0; unit<MAXUNITS; unit++)
+    {
+        if (img[unit])
+        {
+            munmap(img[unit], unit_segs[unit]*768);
+            close(unit_fd[unit]);
+            img[unit] = NULL;
+            unit_segs[unit] = 0;
+            unit_fd[unit] = -1;
+        }
+    }
+    
+   // Intended to e.g. set fs in RO mode
+    stopcmd = getenv("FBS_STOP");
+    if (stopcmd) cmd(stopcmd);
+}
 
 int poll_dsa(uint32_t *reg)
 {
@@ -462,6 +503,39 @@ void select_unit(int unit)
         disconnected = 1;
     }
 }
+
+void wait_powerok()
+{
+    // The cpdsa signal from DRC is forced to 1 when power_ok is false (25V off)
+    int cpdsa;
+    int ledon = 0;
+    
+    while (1)
+    {
+        set_led(ERR_LATCH_LED, (ledon = !ledon));
+        cpdsa = 0;
+        for (int j=0; j<24; j++)  // Could be just 2...
+        {
+            gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT);
+            UPD_DRC;
+            gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
+            UPD_DRC;
+            UPD_DRC;  // For correct timing
+            cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT) != 0;
+        }
+        if (cpdsa < 2)
+        {
+            FBS_LOG(G_MISC, "DRC POWER ON(%d)", cpdsa);
+            set_led(ERR_LATCH_LED, 0);
+            return;
+        }
+        else
+        {
+            sleep(1);
+        }
+    }
+}
+
         
 void flush_track()
 {
@@ -553,8 +627,14 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
         UPD_DRC;
         UPD_DRC;  // For correct timing
-        cpdsa |= *gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT;
+        cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT) != 0;
         w += w;
+    }
+    
+    if (cpdsa > 1)
+    {
+        FBS_LOG(G_MISC, "DRC POWER FAULT(%d)", cpdsa);
+        return -1;
     }
     
     if (poll_dsa(&newdsa))
@@ -565,7 +645,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     }
     else
     {
-        if (cpdsa)
+        if (cpdsa==1)
         {
             newdsa = ((dsa+1) & 0x1FFFF) | (selected_unit << 17);
             chtrack = (newdsa & 3) == 0;
@@ -643,6 +723,8 @@ void main_loop()
             }
             trp += 257;
             wr_ena = do_word_257_267(trp, sect==3, &w267_DRC);
+            if (wr_ena < 0) return; // Power fault
+            
             segm_addr_w = ((((dsa & 0x1FFFC) + sect) << 8) | 0x80000000);
             wr_fault = wr_ena && ((w267_DRC != segm_addr_w) || seek_error);
             trp += 11;
@@ -682,33 +764,60 @@ int main (int argc, char *argv[])
     int tw;
     int rw;
     int dummy;
+    int first = 1;
  
     fbs_openlog();
 	gpio_init();
-	file_init();
 	
-	FBS_LOG(G_MISC, "Started");
-
-	// Short LED test at startup
+	// Turn LEDs ON
     for (j=0; j<8; j++)
     {
         set_led(j,1);
-        usleep(100000);
-        set_led(j,0);
-        usleep(100000);
     }
 
-    
-    for (int unit=0; unit<MAXUNITS; unit++)
+	// Abend immediately if file problems
+	file_init();
+	file_close();
+
+	// Turn LEDs OFF
+    for (j=0; j<8; j++)
     {
-        if (img[unit])
-        {
-            select_unit(unit);
-            break;
-        }
+        set_led(j,0);
     }
-    dsa = 0;
-    fetch_track();
     
-    main_loop();
+	FBS_LOG(G_MISC, "Started");
+	
+	while (1) // loop over +25V on/off cycles
+	{
+	    wait_powerok();
+	    file_init();
+
+        // Short LED test at startup
+        for (j=0; j<8; j++)
+        {
+            set_led(j,1);
+            usleep(100000);
+            set_led(j,0);
+            usleep(100000);
+        }
+
+        if (first)
+        {
+            for (int unit=0; unit<MAXUNITS; unit++)
+            {
+                if (img[unit])
+                {
+                    select_unit(unit);
+                    break;
+                }
+            }
+            dsa = 0;
+        }
+        else
+            select_unit(selected_unit);
+        
+        fetch_track();
+        main_loop();
+        file_close();
+    }
 }
