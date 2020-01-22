@@ -430,7 +430,7 @@ uint32_t elapsed_us(struct timeval tv, struct timeval tbase)
 
 void set_connected(int conn)
 {
-    if (conn)
+    if (!conn)
         gpio_set(GP_CONN_BANK, GP_CONN_BIT);
     else
         gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
@@ -485,6 +485,8 @@ void select_unit(int unit)
 {
     if (unit == selected_unit)
         return;
+    
+    unit &= 3;
     if (selected_unit >= 0)
         set_led(unit_to_led[selected_unit], 0);
     selected_unit = unit;
@@ -521,7 +523,7 @@ void wait_powerok()
             gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
             UPD_DRC;
             UPD_DRC;  // For correct timing
-            cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT) != 0;
+            cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & (1<<GP_CPDSA_BIT)) != 0;
         }
         if (cpdsa < 2)
         {
@@ -607,6 +609,8 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     int32_t w;
     int cpdsa = 0;
     int chtrack = 0;
+    int chunit = 0;
+    uint32_t newunit;
     uint32_t newdsa;
     uint32_t nonsense[11];
     int wr_ena;
@@ -627,10 +631,11 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
         UPD_DRC;
         UPD_DRC;  // For correct timing
-        cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & GP_CPDSA_BIT) != 0;
+        cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & (1<<GP_CPDSA_BIT)) != 0;
         w += w;
     }
     
+    // Handle segment# update
     if (cpdsa > 1)
     {
         FBS_LOG(G_MISC, "DRC POWER FAULT(%d)", cpdsa);
@@ -638,33 +643,35 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     }
     
     if (poll_dsa(&newdsa))
-    {
-        chtrack = ((newdsa & 0x7fffc) != (dsa & 0x7fffc)) ||
-                  ((newdsa >> 17) != selected_unit);
-        FBS_LOG(G_SEEK, "New Unit, DSA: %d %d", newdsa >> 17, newdsa & 0x1FFFF);
-    }
-    else
-    {
-        if (cpdsa==1)
-        {
-            newdsa = ((dsa+1) & 0x1FFFF) | (selected_unit << 17);
-            chtrack = (newdsa & 3) == 0;
-            FBS_LOG(G_SEEK, "Incr DSA: %d", newdsa);
-        }
-    }   
-     
-    if (chtrack)
-    {
-        flush_track();
-        select_unit(newdsa >> 17);
-        dsa = newdsa & 0x1FFFF;
-        fetch_track();  // Changes the data ptr points at!!
+    {   // DSA was written by RC4000
+        newunit = (newdsa >> 17) & 3;
+        chunit = (newunit != selected_unit);
+        newdsa &= 0x1ffff;
+        chtrack = chunit || ((newdsa & 0x1fffc) != (dsa & 0x1fffc));
+        FBS_LOG(G_SEEK, "New Unit, DSA: %d %d", newunit, newdsa);
         flash_led(ACC_LED);
     }
     else
-    {
-        dsa = newdsa & 0x1FFFF;
+    if (cpdsa==1)
+    {   // Track boundary crossed by R/W
+        newdsa = ((dsa+1) & 0x1FFFF);
+        chtrack = (newdsa & 3) == 0;
+        FBS_LOG(G_SEEK, "Incr DSA: %d", newdsa);
     }
+    else
+        newdsa = dsa;
+    
+    if (chtrack)
+    {
+        flush_track();
+        select_unit(newunit);
+        dsa = newdsa;
+        fetch_track();  // Changes the data ptr points at!!
+    }
+    else
+        dsa = newdsa;
+    
+    // end segment# update
         
     // Send 258-267
     wr_ena = send_rcv_words(ptr, 10, nonsense);
