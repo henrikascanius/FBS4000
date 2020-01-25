@@ -16,7 +16,7 @@
 
 #include "fbs_log.h"
 
-#define STANDALONE_TEST 1  // For timing tests on unconnected BB
+// #define STANDALONE_TEST 1  // For timing tests on unconnected BB
 
 // ****************************
 // ***** FBS GPIO INPUTS: *****
@@ -107,8 +107,8 @@ int led_bits[] =  {GP_LED0_BIT, GP_LED1_BIT, GP_LED2_BIT, GP_LED3_BIT,
 #define AM335X_GPIO_OE		    	0x134
 #define AM335X_GPIO_DATAIN			0x138
 #define AM335X_GPIO_DATAOUT			0x13C
-#define AM335X_GPIO_SETDATAOUT		0x190
-#define AM335X_GPIO_CLEARDATAOUT	0x194
+#define AM335X_GPIO_CLEARDATAOUT	0x190
+#define AM335X_GPIO_SETDATAOUT		0x194
 
 #define OUT          (0)
 #define IN           (1)
@@ -430,7 +430,7 @@ uint32_t elapsed_us(struct timeval tv, struct timeval tbase)
 
 void set_connected(int conn)
 {
-    if (!conn)
+    if (conn)
         gpio_set(GP_CONN_BANK, GP_CONN_BIT);
     else
         gpio_clear(GP_CONN_BANK, GP_CONN_BIT);
@@ -469,7 +469,7 @@ void fetch_track()
             trbuf[tridx++] = parity;
             for (int i=0; i<11; i++)
             {
-                trbuf[tridx++] = (((track << 2) + sect)<< 8) | 0x80000000; // See DRC018
+                trbuf[tridx++] = (((track << 2) + ((sect+1)&3))<< 8) | 0x80000000; // See DRC018
             }
         }
         bzero(dirty, sizeof(dirty));
@@ -594,8 +594,12 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
             UPD_DRC;  // For correct timing
             w += w;
         }
-        // Store wrdate, calc parity
-        parity ^= (*(wbuf++) = (wr_word << 8) ^ INVMASK); 
+        if (i < words-1)
+            // Store wrdate, calc parity
+            parity ^= (*(wbuf++) = (wr_word << 8) ^ INVMASK);
+        else
+            // Save received parity or address word, no inversions
+            *(wbuf++) = (wr_word << 8); 
     }
     *wbuf = parity; // append calculated parity (w.o. segm addr word)
     return (gpb1 & (1<<GP_WE_BIT)) == 0;  // WE in same bank as WR_DATA, WE is inverted at 68A1
@@ -664,7 +668,8 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     if (chtrack)
     {
         flush_track();
-        select_unit(newunit);
+        if (chunit)
+            select_unit(newunit);
         dsa = newdsa;
         fetch_track();  // Changes the data ptr points at!!
     }
@@ -675,7 +680,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         
     // Send 258-267
     wr_ena = send_rcv_words(ptr, 10, nonsense);
-    *w267 = nonsense[9] ^ INVMASK; // Magic!
+    *w267 = nonsense[9]; // Last word is not INVMASKED :)
 #ifdef STANDALONE_TEST
     return 0;
 #endif
@@ -712,8 +717,8 @@ void main_loop()
                 if (wr_fault)
                 {
                     set_connected(0);  // Only means we have to signal write error
-                    FBS_LOG(G_ERROR, "WRITE ERROR Segm: %d Addr: %08x Exp: %08x Parity: %08x Exp: %08x",
-                                     dsa, w267_DRC, segm_addr_w, wr_buf[256], calc_parity);
+                    FBS_LOG(G_ERROR, "WRITE ERROR Segm: %d Addr: %08x Exp: %08x Parity: %08x Exp: %08x  W257: %08x",
+                                     dsa, w267_DRC, segm_addr_w, wr_buf[256], calc_parity, wr_buf[257]);
                     flash_led(ERR_LED);
                     set_led(ERR_LATCH_LED, 1);
                 }
@@ -732,7 +737,7 @@ void main_loop()
             wr_ena = do_word_257_267(trp, sect==3, &w267_DRC);
             if (wr_ena < 0) return; // Power fault
             
-            segm_addr_w = ((((dsa & 0x1FFFC) + sect) << 8) | 0x80000000);
+            segm_addr_w = ((((dsa & 0x1FFFC) + ((sect+1)&3)) << 8) | 0x80000000); // Address is for *next* sector on track
             wr_fault = wr_ena && ((w267_DRC != segm_addr_w) || seek_error);
             trp += 11;
         }
@@ -786,16 +791,16 @@ int main (int argc, char *argv[])
 	file_init();
 	file_close();
 
-	// Turn LEDs OFF
-    for (j=0; j<8; j++)
-    {
-        set_led(j,0);
-    }
-    
 	FBS_LOG(G_MISC, "Started");
 	
 	while (1) // loop over +25V on/off cycles
 	{
+        // Turn LEDs OFF
+        for (j=0; j<8; j++)
+        {
+            set_led(j,0);
+        }
+    
 	    wait_powerok();
 	    file_init();
 
