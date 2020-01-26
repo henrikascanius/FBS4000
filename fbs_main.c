@@ -740,7 +740,11 @@ void main_loop()
             }
             trp += 257;
             wr_ena = do_word_257_267(trp, sect==3, &w267_DRC);
-            if (wr_ena < 0) return; // Power fault
+            if (wr_ena < 0)
+            {
+                flush_track();
+                return; // Power fault
+            }
             
             segm_addr_w = ((((dsa & 0x1FFFC) + ((sect+1)&3)) << 8) | 0x80000000); // Address is for *next* sector on track
             wr_fault = wr_ena && ((w267_DRC != segm_addr_w) || seek_error);
