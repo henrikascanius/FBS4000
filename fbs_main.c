@@ -486,7 +486,12 @@ void select_unit(int unit)
     if (unit == selected_unit)
         return;
     
-    unit &= 3;
+    if (unit < 0 || unit >= MAXUNIT)
+    {
+        FBS_LOG(G_ERROR, "*** OUT OF RANGE Unit select: %d", unit);
+        abend("select_unit");
+    }
+
     if (selected_unit >= 0)
         set_led(unit_to_led[selected_unit], 0);
     selected_unit = unit;
@@ -500,7 +505,7 @@ void select_unit(int unit)
     }
     else
     {
-        FBS_LOG(G_SEEK, "UNKNOWN Unit select: %d", unit);
+        FBS_LOG(G_SEEK, "OFFLINE Unit select: %d", unit);
         set_connected(0);
         disconnected = 1;
     }
