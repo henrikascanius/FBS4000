@@ -16,6 +16,7 @@
 
 #include "fbs_log.h"
 
+// #define OVERCLOCK 1
 // #define STANDALONE_TEST 1  // For timing tests on unconnected BB
 
 // ****************************
@@ -220,7 +221,11 @@ void set_led(int led, int val)
 void flash_led(int led)
 {
     set_led(led, 1);
+#ifndef OVERCLOCK
     ledoff_at[led] = trackcnt + 6;
+#else
+    ledoff_at[led] = trackcnt + 10;
+#endif
 }
 
 void upd_leds()
@@ -596,7 +601,9 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
             UPD_DRC;
             gpio_mirror[2] &= ~(1<<GP_RDCLK_BIT);
             UPD_DRC;
+#ifndef OVERCLOCK
             UPD_DRC;  // For correct timing
+#endif
             w += w;
         }
         if (i < words-1)
@@ -639,7 +646,9 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         UPD_DRC;
         gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
         UPD_DRC;
+#ifndef OVERCLOCK
         UPD_DRC;  // For correct timing
+#endif
         cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & (1<<GP_CPDSA_BIT)) != 0;
         w += w;
     }
