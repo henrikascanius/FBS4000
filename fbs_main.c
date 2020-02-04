@@ -146,7 +146,7 @@ uint32_t trackcnt = 0;
 
 int unit_to_led[MAXUNITS] = {7, 6, 5, 4};
 
-#define ACC_LED         3
+#define RD_LED          3
 #define WR_LED          2
 #define ERR_LED         1
 #define ERR_LATCH_LED   0
@@ -633,6 +633,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     uint32_t newdsa;
     uint32_t nonsense[11];
     int wr_ena;
+    int accessed = 0;
     
     // Handle Word257:
     w = (int32_t)(*(ptr++));
@@ -671,14 +672,14 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         newdsa &= 0x1ffff;
         chtrack = chunit || ((newdsa & 0x1fffc) != (dsa & 0x1fffc));
         FBS_LOG(G_SEEK, "New Unit, DSA: %d %d", newunit, newdsa);
-        flash_led(ACC_LED);
     }
     else
     if (cpdsa==1)
-    {   // Track boundary crossed by R/W
+    {   // Sector was read or written
         newdsa = ((dsa+1) & 0x1FFFF);
         chtrack = (newdsa & 3) == 0;
         FBS_LOG(G_SEEK, "Incr DSA: %d", newdsa);
+        accessed = 1;
     }
     else
         newdsa = dsa;
@@ -702,6 +703,13 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
 #ifdef STANDALONE_TEST
     return 0;
 #endif
+
+    if (wr_ena)
+        flash_led(WR_LED);
+     else
+     if (accessed)
+        flash_led(RD_LED);
+            
     return wr_ena;
 }
 
@@ -748,7 +756,6 @@ void main_loop()
                                     (dsa & 0x1fffc)+sect,
                                     wr_buf[0] >> 8,
                                     wr_buf[1] >> 8);
-                    flash_led(WR_LED);
                 }
             }
             trp += 257;
