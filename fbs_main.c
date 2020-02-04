@@ -1,5 +1,5 @@
 // FBS4000 - Future Backing Storage for RC4000 w. DRC401 and a BeagleBone (tm)
-// (c) 2019 by Henrik Ascanius Jacobsen, Dansk Datahistorisk Forening
+// (c) 2019-2020 by Henrik Ascanius Jacobsen, Dansk Datahistorisk Forening
 
 
 #include <stdio.h>
@@ -155,6 +155,8 @@ static uint32_t ledoff_at[8];  // track count for led off
 
 int selected_unit = -1;
 uint32_t dsa = 0;  // Drum Segment Address
+
+int rd_dlybit = 0; // Global 1-bit delay line for outgoing (read) data
 
 // Track buffer, 4*268 24-bit words
 uint32_t trbuf[4*268];
@@ -370,7 +372,7 @@ void file_init()
             if (sb.st_size < 768*4) // At least one track...
                 abend("filesize");
             img[unit] = mmap(NULL, sb.st_size, PROT_READ|PROT_WRITE,
-                             MAP_PRIVATE | MAP_POPULATE,
+                             MAP_SHARED | MAP_POPULATE,
                              unit_fd[unit], 0);
             if (img[unit] == MAP_FAILED)
                 abend("mmap");
@@ -597,13 +599,14 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
             // Output sigs are inverted by 74LS02
             gpio_mirror[2] = (gpio_mirror[2] & ~(1<<GP_RDDATA_BIT)) |
                              (1<<GP_RDCLK_BIT) |
-                             ((w>=0) << GP_RDDATA_BIT);
+                             (rd_dlybit << GP_RDDATA_BIT);
             UPD_DRC;
             gpio_mirror[2] &= ~(1<<GP_RDCLK_BIT);
             UPD_DRC;
 #ifndef OVERCLOCK
             UPD_DRC;  // For correct timing
 #endif
+            rd_dlybit = (w>=0);
             w += w;
         }
         if (i < words-1)
@@ -638,7 +641,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         // Data is sampled 200 ns after pos edge on clk-GPIO. 
         // All sigs are inverted by 74LS02
         gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
-        gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((w>=0) << GP_RDDATA_BIT);
+        gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((rd_dlybit << GP_RDDATA_BIT);
         if (index_sector && (j==3))
             gpio_mirror[2] &= ~(1<<GP_INDEX_BIT);
         else
@@ -650,6 +653,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         UPD_DRC;  // For correct timing
 #endif
         cpdsa += (*gpio_datain_addr[GP_CPDSA_BANK] & (1<<GP_CPDSA_BIT)) != 0;
+        rd_dlybit = (w>=0);
         w += w;
     }
     
@@ -794,7 +798,6 @@ int main (int argc, char *argv[])
     int tw;
     int rw;
     int dummy;
-    int first = 1;
  
     fbs_openlog();
 	gpio_init();
@@ -831,23 +834,19 @@ int main (int argc, char *argv[])
             usleep(100000);
         }
 
-        if (first)
+        for (int unit=0; unit<MAXUNITS; unit++)
         {
-            for (int unit=0; unit<MAXUNITS; unit++)
+            if (img[unit])
             {
-                if (img[unit])
-                {
-                    select_unit(unit);
-                    break;
-                }
+                select_unit(unit);
+                break;
             }
-            dsa = 0;
         }
-        else
-            select_unit(selected_unit);
+        dsa = 0;
         
         fetch_track();
         main_loop();
         file_close();
+        selected_unit = -1;
     }
 }
