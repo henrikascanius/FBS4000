@@ -493,7 +493,7 @@ void select_unit(int unit)
     if (unit == selected_unit)
         return;
     
-    if (unit < 0 || unit >= MAXUNIT)
+    if (unit < 0 || unit >= MAXUNITS)
     {
         FBS_LOG(G_ERROR, "*** OUT OF RANGE Unit select: %d", unit);
         abend("select_unit");
@@ -642,7 +642,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         // Data is sampled 200 ns after pos edge on clk-GPIO. 
         // All sigs are inverted by 74LS02
         gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
-        gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |((rd_dlybit << GP_RDDATA_BIT);
+        gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |(rd_dlybit << GP_RDDATA_BIT);
         if (index_sector && (j==3))
             gpio_mirror[2] &= ~(1<<GP_INDEX_BIT);
         else
