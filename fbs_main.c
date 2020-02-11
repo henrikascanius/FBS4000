@@ -224,9 +224,9 @@ void flash_led(int led)
 {
     set_led(led, 1);
 #ifndef OVERCLOCK
-    ledoff_at[led] = trackcnt + 6;
+    ledoff_at[led] = trackcnt + 4;
 #else
-    ledoff_at[led] = trackcnt + 10;
+    ledoff_at[led] = trackcnt + 6;
 #endif
 }
 
@@ -451,7 +451,7 @@ void fetch_track()
     int tridx = 0;
     uint32_t parity;
     
-    seek_error = (track << 2) > unit_segs[selected_unit];
+    seek_error = ((track+1) << 2) > unit_segs[selected_unit];
     if (!seek_error)
     {
         imgptr = img[selected_unit] + track*768; // (768 b / 4b/w) * 4 seg/tr
@@ -476,7 +476,7 @@ void fetch_track()
             trbuf[tridx++] = parity;
             for (int i=0; i<11; i++)
             {
-                trbuf[tridx++] = (((track << 2) + ((sect+1)&3))<< 8) | 0x80000000; // See DRC018
+                trbuf[tridx++] = ((((track << 2) & 0x7FC) + ((sect+1)&3))<< 8) | 0x80000000; // See DRC018
             }
         }
         bzero(dirty, sizeof(dirty));
@@ -578,8 +578,8 @@ void flush_track()
 
 int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
 {
-    // Common RD/WR loop. Writedata collected in wbuf, calc. parity appened.
-    // wbuf must hold (words+1) words 
+    // Common RD/WR loop. Writedata collected in wbuf, calculated parity appended.
+    // wbuf must have room for (words+1) words 
     int32_t w;
     int wr_ena;
     uint32_t gpb1;
@@ -623,7 +623,7 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
 int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
 {
     // Send address words from ptr
-    // Handle track change; return 1 if WE
+    // Handle track change; return 1 if WE, return -1 if +25V off
     // Collect address word (w267) from DRC, for write check
     int32_t w;
     int cpdsa = 0;
@@ -641,14 +641,15 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
     {
         // Data is sampled 200 ns after pos edge on clk-GPIO. 
         // All sigs are inverted by 74LS02
-        gpio_mirror[2] &= ~(1<<GP_RDDATA_BIT);
-        gpio_mirror[2] = gpio_mirror[2] | (1<<GP_RDCLK_BIT) |(rd_dlybit << GP_RDDATA_BIT);
+        gpio_mirror[2] = (gpio_mirror[2] & ~(1<<GP_RDDATA_BIT)) |
+                         (1<<GP_RDCLK_BIT) |
+                         (rd_dlybit << GP_RDDATA_BIT);
         if (index_sector && (j==3))
             gpio_mirror[2] &= ~(1<<GP_INDEX_BIT);
         else
             gpio_mirror[2] |= 1<<GP_INDEX_BIT;
         UPD_DRC;
-        gpio_mirror[2] = gpio_mirror[2] & ~(1<<GP_RDCLK_BIT);
+        gpio_mirror[2] &= ~(1<<GP_RDCLK_BIT);
         UPD_DRC;
 #ifndef OVERCLOCK
         UPD_DRC;  // For correct timing
@@ -721,7 +722,7 @@ void main_loop()
     uint32_t w267_DRC;
     int wr_fault = 0;
     uint32_t calc_parity;
-    uint32_t segm_addr_w;
+    uint32_t segm_addr_w = 0x80000000;
     struct timeval starttime, laptime, now;
     struct timeval lap2;
     uint32_t tr_time, tmin=1000000, tmax=0;
@@ -736,8 +737,8 @@ void main_loop()
         {
             send_rcv_words(trp, 257, wr_buf); // data + parity
             set_connected(!disconnected);  // Clear temp. error status
-            if (wr_ena)
-            {
+            if (wr_ena && !seek_error)
+            {   // Writes during seek error are ignored with silence
                 calc_parity = wr_buf[257] ^ segm_addr_w; 
                 wr_fault |= wr_buf[256] != calc_parity;
                 if (wr_fault)
@@ -762,12 +763,13 @@ void main_loop()
             wr_ena = do_word_257_267(trp, sect==3, &w267_DRC);
             if (wr_ena < 0)
             {
-                flush_track();
+                if (!seek_error) // paranoia
+                    flush_track();
                 return; // Power fault
             }
             
-            segm_addr_w = ((((dsa & 0x1FFFC) + ((sect+1)&3)) << 8) | 0x80000000); // Address is for *next* sector on track
-            wr_fault = wr_ena && ((w267_DRC != segm_addr_w) || seek_error);
+            segm_addr_w = ((((dsa & 0x7FC) + ((sect+1)&3)) << 8) | 0x80000000); // Address is for *next* sector on track
+            wr_fault = wr_ena && (w267_DRC != segm_addr_w);
             trp += 11;
         }
         trackcnt++;
@@ -854,6 +856,5 @@ int main (int argc, char *argv[])
         fetch_track();
         main_loop();
         file_close();
-        selected_unit = -1;
     }
 }
