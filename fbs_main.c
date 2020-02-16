@@ -457,7 +457,7 @@ void fetch_track()
         imgptr = img[selected_unit] + track*768; // (768 b / 4b/w) * 4 seg/tr
         for (int sect=0; sect<4; sect++)
         {
-            parity = (((track<<2) + sect) << 8) | 0x80000000;
+            parity = ((((track<<2) & 0x7FC) + sect) << 8) | 0x80000000;
             // We keep the word numbering of the DRC...
             // Sector data occupies word 0..255. Reformat to 24-bit
             //    24-bit:     32-bit (file):
