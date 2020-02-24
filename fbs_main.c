@@ -103,13 +103,13 @@ int led_bits[] =  {GP_LED0_BIT, GP_LED1_BIT, GP_LED2_BIT, GP_LED3_BIT,
 #define MAX_GPIO_BANKS              (4)
 
 // GPIO register size
-#define AM335X_GPIO_SIZE		    0x1000
+#define AM335X_GPIO_SIZE            0x1000
 
-#define AM335X_GPIO_OE		    	0x134
-#define AM335X_GPIO_DATAIN			0x138
-#define AM335X_GPIO_DATAOUT			0x13C
-#define AM335X_GPIO_CLEARDATAOUT	0x190
-#define AM335X_GPIO_SETDATAOUT		0x194
+#define AM335X_GPIO_OE              0x134
+#define AM335X_GPIO_DATAIN          0x138
+#define AM335X_GPIO_DATAOUT         0x13C
+#define AM335X_GPIO_CLEARDATAOUT    0x190
+#define AM335X_GPIO_SETDATAOUT      0x194
 
 #define OUT          (0)
 #define IN           (1)
