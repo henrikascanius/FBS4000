@@ -418,6 +418,11 @@ int poll_dsa(uint32_t *reg)
     
     if (!gpio_read_pin(GP_SRRQ_BANK, GP_SRRQ_BIT))
         return 0;
+
+    // Delay to make sure DRC strobe has terminated
+    i = gpio_read_pin(GP_SRRQ_BANK, GP_SRRQ_BIT);
+    i = gpio_read_pin(GP_SRRQ_BANK, GP_SRRQ_BIT);
+    i = gpio_read_pin(GP_SRRQ_BANK, GP_SRRQ_BIT);
     
     // SRCLK is inverted by IC4C
     for (i=0; i<19; i++)
@@ -672,14 +677,14 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         chunit = (newunit != selected_unit);
         newdsa &= 0x1ffff;
         chtrack = chunit || ((newdsa & 0x1fffc) != (dsa & 0x1fffc));
-        FBS_LOG(G_SEEK, "New Unit, DSA: %d %d", newunit, newdsa);
+        FBS_LOG(G_SEEK, "Tr: %d New Unit, DSA: %d %d", trackcnt, newunit, newdsa);
     }
     else
     if (cpdsa==1)
     {   // Sector was read or written
         newdsa = ((dsa+1) & 0x1FFFF);
         chtrack = (newdsa & 3) == 0;
-        FBS_LOG(G_SEEK, "Incr DSA: %d", newdsa);
+        FBS_LOG(G_SEEK, "Tr: %d Incr DSA: %d", trackcnt, newdsa);
         accessed = 1;
     }
     else
@@ -744,8 +749,8 @@ void main_loop()
                 if (wr_fault)
                 {
                     set_connected(0);  // Only means we have to signal write error
-                    FBS_LOG(G_ERROR, "WRITE ERROR Segm: %d Addr: %08x Exp: %08x Parity: %08x Exp: %08x  W257: %08x",
-                                     dsa, w267_DRC, segm_addr_w, wr_buf[256], calc_parity, wr_buf[257]);
+                    FBS_LOG(G_ERROR, "Tr: %d WRITE ERROR Segm: %d Addr: %08x Exp: %08x Parity: %08x Exp: %08x  W257: %08x",
+                                     trackcnt, dsa, w267_DRC, segm_addr_w, wr_buf[256], calc_parity, wr_buf[257]);
                     flash_led(ERR_LED);
                     set_led(ERR_LATCH_LED, 1);
                 }
@@ -753,7 +758,8 @@ void main_loop()
                 {   // Write OK: Update sector in trbuf
                     memcpy(trbuf+(sect*268), wr_buf, 257*4);
                     dirty[sect] = 1;
-                    FBS_LOG(G_DATA, "Write data: Sector: %d Data[0..1]: %06X %06X",
+                    FBS_LOG(G_DATA, "Tr: %d Write data: Sector: %d Data[0..1]: %06X %06X",
+                                    trackcnt,
                                     (dsa & 0x1fffc)+sect,
                                     wr_buf[0] >> 8,
                                     wr_buf[1] >> 8);
