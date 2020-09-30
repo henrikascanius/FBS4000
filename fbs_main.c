@@ -133,7 +133,9 @@ uint32_t *gpio_cleardataout_addr[MAX_GPIO_BANKS]        = { NULL };
 
 uint32_t gpio_mirror[MAX_GPIO_BANKS];
 
-#define INVMASK  0x66666600
+#define INVMASK24  0x66666600
+#define INVMASK32  0x66666666
+
 #define MAXUNITS 4
 
 int unit_fd[MAXUNITS];
@@ -472,10 +474,10 @@ void fetch_track()
             //      lkj0
             for (int i=0; i<256/4; i++)
             {
-                parity ^= (trbuf[tridx++] = (imgptr[0] << 8) ^ INVMASK);
-                parity ^= (trbuf[tridx++] = ((((imgptr[0] & 0xff000000) >> 16) | (imgptr[1] << 16))) ^INVMASK);
-                parity ^= (trbuf[tridx++] = ((((imgptr[1] & 0xffff0000) >> 8)  | (imgptr[2] << 24))) ^INVMASK);
-                parity ^= (trbuf[tridx++] = (imgptr[2] & 0xffffff00) ^INVMASK);
+                parity ^= (trbuf[tridx++] = (imgptr[0] << 8) ^ INVMASK24);
+                parity ^= (trbuf[tridx++] = ((((imgptr[0] & 0xff000000) >> 16) | (imgptr[1] << 16))) ^INVMASK24);
+                parity ^= (trbuf[tridx++] = ((((imgptr[1] & 0xffff0000) >> 8)  | (imgptr[2] << 24))) ^INVMASK24);
+                parity ^= (trbuf[tridx++] = (imgptr[2] & 0xffffff00) ^INVMASK24);
                 imgptr += 3;
             }
             trbuf[tridx++] = parity;
@@ -571,9 +573,9 @@ void flush_track()
             tridx = sect*268;
             for (int i=0; i<256/4; i++)
             {
-                *(imgptr++) = (trbuf[tridx] >> 8) | ((trbuf[tridx+1] & 0x0000ff00) << 16);
-                *(imgptr++) = (trbuf[tridx+1] >> 16) | ((trbuf[tridx+2] & 0x00ffff00) << 8);
-                *(imgptr++) = (trbuf[tridx+2] >> 24) | (trbuf[tridx+3] & 0xffffff00);
+                *(imgptr++) = ((trbuf[tridx] >> 8) | ((trbuf[tridx+1] & 0x0000ff00) << 16)) ^INVMASK32;
+                *(imgptr++) = ((trbuf[tridx+1] >> 16) | ((trbuf[tridx+2] & 0x00ffff00) << 8)) ^INVMASK32;
+                *(imgptr++) = ((trbuf[tridx+2] >> 24) | (trbuf[tridx+3] & 0xffffff00)) ^INVMASK32;
                 tridx += 4;
             }
             dirty[sect] = 0;
@@ -615,10 +617,10 @@ int send_rcv_words(uint32_t *ptr, int words, uint32_t *wbuf)
             w += w;
         }
         if (i < words-1)
-            // Store wrdate, calc parity
-            parity ^= (*(wbuf++) = (wr_word << 8) ^ INVMASK);
+            // Store wrdata, calc parity
+            parity ^= (*(wbuf++) = (wr_word << 8));
         else
-            // Save received parity or address word, no inversions
+            // Save received parity or address word
             *(wbuf++) = (wr_word << 8); 
     }
     *wbuf = parity; // append calculated parity (w.o. segm addr word)
@@ -705,7 +707,7 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
         
     // Send 258-267
     wr_ena = send_rcv_words(ptr, 10, nonsense);
-    *w267 = nonsense[9]; // Last word is not INVMASKED :)
+    *w267 = nonsense[9];
 #ifdef STANDALONE_TEST
     return 0;
 #endif
