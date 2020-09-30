@@ -13,11 +13,29 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
-
-#include "fbs_log.h"
+#include <syslog.h>
 
 // #define OVERCLOCK 1
 // #define STANDALONE_TEST 1  // For timing tests on unconnected BB
+
+// ****************************
+// *** SYSLOG DEFINITIONS:  ***
+// ****************************
+
+// Mask bits for syslogging
+#define G_SEEK    1
+#define G_DATA    2
+#define G_ERROR   4
+#define G_STAT    8
+#define G_MISC  256
+
+static uint32_t logmask = 0xffffffff;
+
+#define FBS_LOG(group, args...) \
+do { \
+    if (logmask & group) syslog(LOG_INFO, ##args); \
+} while (0);
+
 
 // ****************************
 // ***** FBS GPIO INPUTS: *****
@@ -170,6 +188,19 @@ void abend(char *s)
     exit(1);
 }
 
+void fbs_openlog()
+{
+    char *logpar;
+
+    openlog("FBS4000", LOG_NDELAY, LOG_USER);
+    if ((logpar=getenv("FBS_LOGMASK")) != NULL)
+    {
+        errno = 0;
+        logmask = strtoul(logpar, NULL, 16);
+        if (errno) abend("Error in FBS_LOGMASK");
+    }
+}
+
 void gpio_set_direction(int bank, int pin, int direction)
 {
 	uint32_t reg;
@@ -298,7 +329,7 @@ void gpio_init()
 	close(mem_fd); //No need to keep mem_fd open after mmap
 	for (bank = 0; bank < MAX_GPIO_BANKS; bank++) {
 		if (gpio_addr[bank] == MAP_FAILED) {
-			fprintf(stderr, "mmap error %d\n", (int)gpio_addr[bank]);//errno also set!
+			fprintf(stderr, "mmap error %ld\n", (uintptr_t)gpio_addr[bank]);//errno also set!
 			exit(-1);
 		}
 	}
