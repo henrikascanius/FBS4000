@@ -195,9 +195,8 @@ void fbs_openlog()
     openlog("FBS4000", LOG_NDELAY, LOG_USER);
     if ((logpar=getenv("FBS_LOGMASK")) != NULL)
     {
-        errno = 0;
         logmask = strtoul(logpar, NULL, 16);
-        if (errno) abend("Error in FBS_LOGMASK");
+        if (!logmask) abend("Error in FBS_LOGMASK (0 not allowed)");
     }
 }
 
