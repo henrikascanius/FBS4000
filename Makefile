@@ -1,7 +1,7 @@
 # src = $(wildcard *.c)
 CC = gcc
 
-fbs: fbs_main.c fbs_log.h
+fbs: fbs_main.c
 	gcc -o fbs fbs_main.c
 
 .PHONY: clean
