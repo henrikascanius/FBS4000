@@ -29,7 +29,7 @@
 #define G_STAT    8
 #define G_MISC  256
 
-static uint32_t logmask = 0xffffffff;
+static uint32_t logmask = G_MISC | G_STAT | G_ERROR;
 
 #define FBS_LOG(group, args...) \
 do { \
