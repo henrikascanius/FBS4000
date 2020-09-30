@@ -153,7 +153,7 @@ int unit_to_led[MAXUNITS] = {7, 6, 5, 4};
 #define ERR_LED         1
 #define ERR_LATCH_LED   0
 
-static uint32_t ledoff_at[8];  // track count for led off
+static uint32_t flash_led[8];  // led flash flag
 
 int selected_unit = -1;
 uint32_t dsa = 0;  // Drum Segment Address
@@ -222,22 +222,20 @@ void set_led(int led, int val)
         gpio_write_bank_from_mirror(led_banks[led]);
 }
 
-void flash_led(int led)
+void blink(int led, uint32_t len)
 {
-    set_led(led, 1);
-#ifndef OVERCLOCK
-    ledoff_at[led] = trackcnt + 4;
-#else
-    ledoff_at[led] = trackcnt + 6;
-#endif
+    flash_led[led] = len+1;
 }
 
 void upd_leds()
 {
     for (int led=0; led<8; led++)
     {
-        if (ledoff_at[led] == trackcnt)
-            set_led(led, 0);
+        if (flash_led[led])
+        {
+            flash_led[led]--;
+            set_led(led, flash_led[led]);
+        }
     }
 }
 
@@ -713,10 +711,10 @@ int do_word_257_267(uint32_t *ptr, int index_sector, uint32_t *w267)
 #endif
 
     if (wr_ena)
-        flash_led(WR_LED);
+        blink(WR_LED,1);
      else
      if (accessed)
-        flash_led(RD_LED);
+        blink(RD_LED,1);
             
     return wr_ena;
 }
@@ -753,7 +751,7 @@ void main_loop()
                     set_connected(0);  // Only means we have to signal write error
                     FBS_LOG(G_ERROR, "Tr: %d WRITE ERROR Segm: %d Addr: %08x Exp: %08x Parity: %08x Exp: %08x  W257: %08x",
                                      trackcnt, dsa, w267_DRC, segm_addr_w, wr_buf[256], calc_parity, wr_buf[257]);
-                    flash_led(ERR_LED);
+                    blink(ERR_LED,5);
                     set_led(ERR_LATCH_LED, 1);
                 }
                 else
