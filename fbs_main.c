@@ -878,7 +878,7 @@ int main (int argc, char *argv[])
             set_led(j,0);
             usleep(100000);
         }
-
+        selected_unit = -1;
         for (int unit=0; unit<MAXUNITS; unit++)
         {
             if (img[unit])
